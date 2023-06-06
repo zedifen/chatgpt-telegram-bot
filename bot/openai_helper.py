@@ -96,7 +96,34 @@ class OpenAIHelper:
         self.config = config
         self.plugin_manager = plugin_manager
         self.conversations: dict[int: list] = {}  # {chat_id: history}
+        self.chat_model: dict[int: str] = {}  # {chat_id: model_name}
         self.last_updated: dict[int: datetime] = {}  # {chat_id: last_update_timestamp}
+
+    def get_allowed_gpt_models(self):
+        """
+        Gets all available GPT models.
+        :return: A list of all available GPT models
+        """
+        return self.config['allowed_models']
+
+    def get_chat_gpt_model(self, chat_id: int):
+        """
+        Get the GPT model for specific chat.
+        :param chat_id: The chat ID
+        """
+        return self.chat_model.get(chat_id, self.config['model'])
+
+    def set_chat_gpt_model(self, chat_id: int, model: str):
+        """
+        Switches the GPT model for specific chat.
+        :param chat_id: The chat ID
+        :param model: The model id
+        """
+        if model not in GPT_ALL_MODELS:
+            raise Exception(f"Model {model} is not supported.")
+        if model not in self.config['allowed_models']:
+            raise Exception(f"Model {model} is not allowed.")
+        self.chat_model[chat_id] = model
 
     def get_conversation_stats(self, chat_id: int) -> tuple[int, int]:
         """
@@ -106,7 +133,7 @@ class OpenAIHelper:
         """
         if chat_id not in self.conversations:
             self.reset_chat_history(chat_id)
-        return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id])
+        return len(self.conversations[chat_id]), self.__count_tokens(self.conversations[chat_id], self.get_chat_gpt_model(chat_id))
 
     async def get_chat_response(self, chat_id: int, query: str) -> tuple[str, str]:
         """
@@ -176,7 +203,7 @@ class OpenAIHelper:
                 yield answer, 'not_finished'
         answer = answer.strip()
         self.__add_to_history(chat_id, role="assistant", content=answer)
-        tokens_used = str(self.__count_tokens(self.conversations[chat_id]))
+        tokens_used = str(self.__count_tokens(self.conversations[chat_id], self.get_chat_gpt_model(chat_id)))
 
         show_plugins_used = len(plugins_used) > 0 and self.config['show_plugins_used']
         plugin_names = tuple(self.plugin_manager.get_plugin_source_name(plugin) for plugin in plugins_used)
@@ -212,14 +239,16 @@ class OpenAIHelper:
             self.__add_to_history(chat_id, role="user", content=query)
 
             # Summarize the chat history if it's too long to avoid excessive token usage
-            token_count = self.__count_tokens(self.conversations[chat_id])
-            exceeded_max_tokens = token_count + self.config['max_tokens'] > self.__max_model_tokens()
+            model = self.get_chat_gpt_model(chat_id)
+            token_count = self.__count_tokens(self.conversations[chat_id], model)
+            max_tokens = min(default_max_tokens(model), self.config['max_tokens'])
+            exceeded_max_tokens = token_count + max_tokens > self.__max_model_tokens(model)
             exceeded_max_history_size = len(self.conversations[chat_id]) > self.config['max_history_size']
 
             if exceeded_max_tokens or exceeded_max_history_size:
                 logging.info(f'Chat history for chat ID {chat_id} is too long. Summarising...')
                 try:
-                    summary = await self.__summarise(self.conversations[chat_id][:-1])
+                    summary = await self.__summarise(self.conversations[chat_id][:-1], model)
                     logging.debug(f'Summary: {summary}')
                     self.reset_chat_history(chat_id, self.conversations[chat_id][0]['content'])
                     self.__add_to_history(chat_id, role="assistant", content=summary)
@@ -229,11 +258,11 @@ class OpenAIHelper:
                     self.conversations[chat_id] = self.conversations[chat_id][-self.config['max_history_size']:]
 
             common_args = {
-                'model': self.config['model'],
+                'model': model,
                 'messages': self.conversations[chat_id],
                 'temperature': self.config['temperature'],
                 'n': self.config['n_choices'],
-                'max_tokens': self.config['max_tokens'],
+                'max_tokens': max_tokens,
                 'presence_penalty': self.config['presence_penalty'],
                 'frequency_penalty': self.config['frequency_penalty'],
                 'stream': stream
@@ -384,10 +413,11 @@ class OpenAIHelper:
         """
         self.conversations[chat_id].append({"role": role, "content": content})
 
-    async def __summarise(self, conversation) -> str:
+    async def __summarise(self, conversation, model: str) -> str:
         """
         Summarises the conversation history.
         :param conversation: The conversation history
+        :param model: The GPT model id
         :return: The summary
         """
         messages = [
@@ -395,34 +425,34 @@ class OpenAIHelper:
             {"role": "user", "content": str(conversation)}
         ]
         response = await openai.ChatCompletion.acreate(
-            model=self.config['model'],
+            model=model,
             messages=messages,
             temperature=0.4
         )
         return response.choices[0]['message']['content']
 
-    def __max_model_tokens(self):
+    def __max_model_tokens(self, model: str):
         base = 4096
-        if self.config['model'] in GPT_3_MODELS:
+        if model in GPT_3_MODELS:
             return base
-        if self.config['model'] in GPT_3_16K_MODELS:
+        if model in GPT_3_16K_MODELS:
             return base * 4
-        if self.config['model'] in GPT_4_MODELS:
+        if model in GPT_4_MODELS:
             return base * 2
-        if self.config['model'] in GPT_4_32K_MODELS:
+        if model in GPT_4_32K_MODELS:
             return base * 8
         raise NotImplementedError(
-            f"Max tokens for model {self.config['model']} is not implemented yet."
+            f"Max tokens for model {model} is not implemented yet."
         )
 
     # https://github.com/openai/openai-cookbook/blob/main/examples/How_to_count_tokens_with_tiktoken.ipynb
-    def __count_tokens(self, messages) -> int:
+    def __count_tokens(self, messages, model: str) -> int:
         """
         Counts the number of tokens required to send the given messages.
         :param messages: the messages to send
+        :param model: The GPT model id
         :return: the number of tokens required
         """
-        model = self.config['model']
         try:
             encoding = tiktoken.encoding_for_model(model)
         except KeyError:

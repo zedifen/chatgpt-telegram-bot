@@ -30,6 +30,7 @@ def main():
     model = os.environ.get('OPENAI_MODEL', 'gpt-3.5-turbo')
     functions_available = are_functions_available(model=model)
     max_tokens_default = default_max_tokens(model=model)
+    allowed_models = os.environ.get('ALLOWED_MODELS', 'gpt-3.5-turbo;gpt-3.5-turbo-0301').split(';')
     openai_config = {
         'api_key': os.environ['OPENAI_API_KEY'],
         'show_usage': os.environ.get('SHOW_USAGE', 'false').lower() == 'true',
@@ -43,6 +44,7 @@ def main():
         'temperature': float(os.environ.get('TEMPERATURE', 1.0)),
         'image_size': os.environ.get('IMAGE_SIZE', '512x512'),
         'model': model,
+        'allowed_models': allowed_models,
         'enable_functions': os.environ.get('ENABLE_FUNCTIONS', str(functions_available)).lower() == 'true',
         'functions_max_consecutive_calls': int(os.environ.get('FUNCTIONS_MAX_CONSECUTIVE_CALLS', 10)),
         'presence_penalty': float(os.environ.get('PRESENCE_PENALTY', 0.0)),

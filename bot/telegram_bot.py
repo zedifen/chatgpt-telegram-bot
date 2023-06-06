@@ -21,6 +21,7 @@ from utils import is_group_chat, get_thread_id, message_text, wrap_with_indicato
 from openai_helper import OpenAIHelper, localized_text
 from usage_tracker import UsageTracker
 
+from typing import cast
 
 class ChatGPTTelegramBot:
     """
@@ -39,6 +40,7 @@ class ChatGPTTelegramBot:
         self.commands = [
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
+            BotCommand(command='models', description=localized_text('models_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
             BotCommand(command='resend', description=localized_text('resend_description', bot_language))
         ]
@@ -204,6 +206,46 @@ class ChatGPTTelegramBot:
         await update.effective_message.reply_text(
             message_thread_id=get_thread_id(update),
             text=localized_text('reset_done', self.config['bot_language'])
+        )
+
+    async def models(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Return the models available for the bot.
+        """
+        chat_id = update.effective_chat.id
+        reply_markup = InlineKeyboardMarkup.from_column(
+            [InlineKeyboardButton(model, callback_data=f"model:{model}") for model in self.openai.get_allowed_gpt_models()]
+        )
+        await update.message.reply_text(
+            message_thread_id=get_thread_id(update),
+            text=f"{localized_text('current_chat_model', self.config['bot_language'])}: "
+                 f"{self.openai.get_chat_gpt_model(chat_id)}\n"
+                 f"{localized_text('choose_from_allowed_models', self.config['bot_language'])}:",
+            reply_markup=reply_markup
+        )
+
+    async def handle_callback_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Sets the model for the bot.
+        """
+        await update.callback_query.answer()
+        callback_data = update.callback_query.data
+        callback_data = cast(str, callback_data)
+        callback_data_suffix = "model:"
+        chat_id = update.effective_chat.id
+        try:
+            if callback_data.startswith(callback_data_suffix):
+                model_name = callback_data[len(callback_data_suffix):]
+                self.openai.set_chat_gpt_model(chat_id, model_name)
+        except Exception as e:
+            logging.exception(e)
+            await update.callback_query.edit_message_text(
+                message_thread_id=get_thread_id(update),
+                text=f"{localized_text('model_set_fail', self.config['bot_language'])}: {model_name} \n{str(e)}"
+            )
+
+        await update.callback_query.edit_message_text(
+            text=f"{localized_text('model_set', self.config['bot_language'])}: {model_name}"
         )
 
     async def image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -784,6 +826,8 @@ class ChatGPTTelegramBot:
             .build()
 
         application.add_handler(CommandHandler('reset', self.reset))
+        application.add_handler(CommandHandler('models', self.models))
+        application.add_handler(CallbackQueryHandler(self.handle_callback_models))
         application.add_handler(CommandHandler('help', self.help))
         application.add_handler(CommandHandler('image', self.image))
         application.add_handler(CommandHandler('start', self.help))
